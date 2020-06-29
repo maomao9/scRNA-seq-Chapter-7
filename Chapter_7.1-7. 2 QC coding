@@ -1,0 +1,257 @@
+library(tidyverse)
+library(SingleCellExperiment)
+library(scater)
+options(stringsAsFactors = FALSE)
+## maker sure we are in the correct directory
+setwd("/Users/suifangmao/Chapter 7")
+# Use the following command to clear the environment
+rm(list=ls())
+
+###7.1.2 Tung dataset
+
+# creat data file
+dir.create("../tung")
+
+# Download internet data
+URL1 <- "https://scrnaseq-course.cog.sanger.ac.uk/data/tung/annotation.txt"
+download.file(URL1, destfile = "/Users/suifangmao/Chapter 7/tung/annotation.txt")
+
+URL2 <- "https://scrnaseq-course.cog.sanger.ac.uk/data/tung/molecules.txt"
+download.file(URL2, destfile = "/Users/suifangmao/Chapter 7/tung/molecules.txt")
+
+# If the code works from R/ use "../" to go up one directory
+molecules <- read.table("tung/molecules.txt", sep = "\t")
+anno <- read.table("tung/annotation.txt", sep = "\t", header = TRUE)
+head(anno)
+unique(anno$individual)
+unique(anno$replicate)
+
+umi <- SingleCellExperiment(
+  assays = list(counts = as.matrix(molecules)), 
+  colData = anno
+)
+umi
+
+## rowSums(x,), here x is a Matrix
+keep_feature <- rowSums(counts(umi) > 0) > 0
+umi <- umi[keep_feature, ]
+umi
+# SpikeIn = umi[grepl("^ERCC-", rownames(umi)),] - old code
+
+## NEW CODE
+spikein_names <- grep("^ERCC-",rownames(molecules), value=TRUE)
+SpikeIn = molecules[spikein_names,]
+
+## Spike-in
+altExp(umi, "spike-in") <- SummarizedExperiment(
+  assays = list(counts = as.matrix(SpikeIn))
+)
+## MTgenes
+MTgene_names <-c("ENSG00000198899", "ENSG00000198727", "ENSG00000198888","ENSG00000198886", "ENSG00000212907", "ENSG00000198786",
+                 "ENSG00000198695", "ENSG00000198712", "ENSG00000198804", "ENSG00000198763", "ENSG00000228253", "ENSG00000198938","ENSG00000198840")
+
+MTgenes=molecules[rownames(molecules) %in% MTgene_names,]
+
+altExp(umi, "MTgenes") <- SummarizedExperiment(assays=list(counts=as.matrix(MTgenes)))
+
+## QC
+umi_qc <- perCellQCMetrics(umi,
+                          exprs_values="counts",
+                           use_altexps=TRUE)
+
+
+###7.1.3 Cell QC
+##7.1.3.1 Library size
+
+#make a hist plot (1): old code
+#hist(
+#  umi_qc$total,
+#  breaks = 100
+#)
+
+###New code 
+## Key: include qc into umi object
+## https://rdrr.io/bioc/scater/man/plotColData.html
+colData(umi) <- cbind(colData(umi), umi_qc)
+hist(
+  umi$sum,
+  breaks = 100
+)
+abline(v = 25000, col = "red")
+
+
+#filter cells that have less than 25000 counts per cell
+##umi_qcsum$total is integer
+
+#filter_by_total_counts<-(umi_qc$total > 25000)
+filter_by_total_counts<-(umi$sum > 25000) # should use "sum" as total counts
+table(filter_by_total_counts)
+
+
+##7.1.3.2 Detected genes
+hist(
+  umi$detected,
+  breaks = 100
+)
+abline(v = 7000, col = "red")
+
+#filter cells that have less than 7000 genes detected per cell
+filter_by_gene_feature<-(umi_qc$detected > 7000)
+table(filter_by_gene_feature)
+
+#7.1.3.3 ERCCs and MTs
+## Key: include qc into umi object
+###old code below failed to plot MT~deteced genes 
+#plotColData(
+#  umi,
+#  x = "umi$detected",
+#  y = "umi$altexps_MTgenes_percent",
+#  colour = "batch"
+#)
+
+##New code below work to plot MT~deteced genes 
+plotColData(
+  umi,
+  x = "detected",
+  y = "altexps_MTgenes_percent",
+  colour = "batch"
+)
+##New code below work to plot ERCC~deteced genes 
+plotColData(
+  umi,
+  x = "detected",
+  y = "altexps_spike-in_percent",
+  colour = "batch"
+)
+
+## filter by batch Question
+#solut-1
+#filter_by_batch1 <-umi[grepl("NA19098.r2", colnames(umi)),]
+
+#solut-2
+#filter_by_batch2<- colnames(umi) %in% "NA19098.r2"
+#table(filter_by_batch2)
+
+#solut-3
+#filter_by_batch3 <- grep("NA19098.r2",colnames(umi))
+#filter_by_batch3 <- is.logical(grep("NA19098.r2",colnames(umi)))
+#filter_by_ERCC = colSums(filter_by_batch3)
+
+#solution-4 now it works
+filter_by_ERCC <-umi$batch != "NA19098.r2"
+filter_by_ERCC
+table(filter_by_ERCC)
+
+## filter >10% MT genes 
+filter_by_MT<-umi$altexps_MTgenes_percent < 10
+table(filter_by_MT)
+##my output different from material
+#my output              meterial
+#FALSE  TRUE            FALSE  TRUE
+# 17   847              31   833
+
+##5.1.4 Cell filtering (by counts, genes. ERCC and MT)
+umi$use <- (
+  # sufficient features (genes)
+  filter_by_gene_feature &
+    # sufficient molecules counted
+    filter_by_total_counts &
+    # sufficient endogenous RNA
+    filter_by_ERCC &
+    # remove cells with unusual number of reads in MT genes
+    filter_by_MT
+)
+table(umi$use)
+## my output is different:
+#  my output              meterial
+#  FALSE  TRUE            FALSE  TRUE
+#  202   662              207    657
+
+##7.1.4.2 Automatic
+#solution-1: "run PCA failed" for umi
+## we need a logcounts in SCE object umi
+#umi<-logNormCounts(umi)
+#umi <- runPCA(umi, exprs_values = "logcounts" )
+#reducedDimNames(umi)
+
+#solution-2: runColDataPCA
+## Can supply names of colData variables to 'variables',
+# as well as AsIs-wrapped vectors of interest.
+# Note: I need a robustbase package
+#install.packages(c("robustbase"))
+umi<-runColDataPCA(umi,
+                   variables = list("sum", "detected", "altexps_MTgenes_percent", "altexps_spike-in_percent"),
+                   outliers = TRUE)
+reducedDimNames(umi)
+table(umi$outlier)
+#output different from material
+#my output              meterial
+#FALSE  TRUE            FALSE  TRUE
+#736   128              791    73
+
+# visulize the outlier in PCA
+#solution-1: failed
+#plotReducedDim(
+#               umi,
+#               use_dimred = "PCA_coldata",
+#               size_by = "total_features_by_counts", 
+#               shape_by = "use", 
+#               colour_by = "outlier"
+#               )
+
+#solution-2: (I think size_by and shape_by are redundant)
+#since "use" include "total_features_by_counts", 
+plotReducedDim(umi, dimred = "PCA_coldata", 
+               size_by = "detected",
+               shape_by = "use", 
+               colour_by="outlier"
+)
+
+## 7.1.5 Compare filterings
+library(limma)
+# mannual filter is umi$use
+# auto filter is umi$outlier
+man <- colnames(umi)[!umi$use]
+auto <- colnames(umi)[umi$outlier]
+#vennCounts(x, include="both"), x is a TestResults numeric matrix, thus we make a matrix of logic
+venn_diag <- vennCounts(
+  cbind(colnames(umi) %in% auto,
+        colnames(umi) %in% man)
+)
+#vennDiagram(object), object is the result of vennCounts or a TestResults matrix . Here is the former.
+vennDiagram(venn_diag, names = c("Automatic", "Manual"),
+            circle.col = c("blue", "green")
+)
+
+## 7.1.6 Gene analysis 
+# The code is ok, but I can't get the plot
+plotHighestExprs(umi, exprs_values = "counts")
+#colData(x) <- value: Get or set the column data. value is a DataFrame object.
+#questions 1: nexpres here is to output those has more than 1 transcript counts and
+#the >=2 is to see if there are more than 2 cells have more than 1 transcript, then keep those genes
+
+keep_feature <- nexprs( #nexprs to count the number of non-zero counts per cell or feature
+  umi[,colData(umi)$use], #here, genes are filtered after cell filtering
+  byrow = TRUE, #whether to count the number of detected cells per feature/gene, questions: so sum the total cell number?
+  detection_limit = 1 #more than 1 transcript counts
+) >= 2 # threshold set as more than 2 cells have more than 1 transcript
+
+rowData(umi)$use <- keep_feature
+table(keep_feature)
+# my output        # chapter output 
+# FALSE  TRUE        FALSE  TRUE 
+# 4653 14073         4660 14066        
+
+## save the QC data 
+dim(umi[rowData(umi)$use, colData(umi)$use])
+#  my output       ## chapter: 
+#14073   662       14066   657
+
+#log-transformed counts
+assay(umi, "logcounts_raw") <- log2(counts(umi) + 1)
+umi
+reducedDim(umi) <- NULL #question: why the PCA_coldata need to be removed?
+umi
+
+#save the data
+saveRDS(umi, file = "tung/umi.rds")
