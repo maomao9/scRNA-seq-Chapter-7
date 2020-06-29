@@ -1,0 +1,32 @@
+library(SingleCellExperiment)
+library(scater)
+options(stringsAsFactors = FALSE)
+umi <- readRDS("tung/umi.rds")
+umi.qc <- umi[rowData(umi)$use, colData(umi)$use]
+
+#old code: failed
+#endog_genes <- !rowData(umi.qc)$is_feature_control
+
+#Thus, we need to define "is_feature_control" which comes from "calculateQCMetrics" that dyfunc.
+#is_feature_control:which indicates if the feature belongs to any of the control sets (spike_in and MT)
+Is_Spike_in <- grepl("^ERCC-",rownames(umi)) # need to be a logical return
+MTgene_names <-c("ENSG00000198899", "ENSG00000198727", "ENSG00000198888","ENSG00000198886", "ENSG00000212907", "ENSG00000198786",
+                 "ENSG00000198695", "ENSG00000198712", "ENSG00000198804", "ENSG00000198763", "ENSG00000228253", "ENSG00000198938","ENSG00000198840")
+Is_MTgene <- rownames(umi) %in% MTgene_names
+umi.qc$is_feature_control<- Is_Spike_in | Is_MTgene
+
+endog_genes <- !rowData(umi.qc)$is_feature_control
+
+
+#7.3.2.1 Before QC
+tmp <- runPCA(
+  umi[endog_genes, ], ###The key is definie endog_genes
+  exprs_values = "counts"
+ )
+
+plotPCA(
+       tmp,
+       colour_by = "batch",
+       size_by = "detected",
+       shape_by = "individual"
+   )
